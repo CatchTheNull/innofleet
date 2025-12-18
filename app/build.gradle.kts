@@ -47,6 +47,8 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    //loader
+    implementation("androidx.core:core-splashscreen:1.0.1")
 
     // Views stack
     implementation("androidx.appcompat:appcompat:1.7.0")

@@ -4,6 +4,7 @@
     <!-- Permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 
     <application
         android:allowBackup="false"
@@ -43,22 +44,23 @@
             android:exported="false"
             android:theme="@style/Theme.InnoKiosk" />
 
-        <!-- Kiosk -->
+        <!-- Kiosk (LAUNCHER with Splash) -->
         <activity
             android:name=".ui.kiosk.KioskActivity"
-            android:exported="false"
-            android:theme="@style/Theme.InnoKiosk" />
-
-        <!-- Router -->
-        <activity
-            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:theme="@style/Theme.InnoKiosk">
+            android:theme="@style/Theme.InnoKiosk.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Router (fallback, not used as launcher anymore) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.InnoKiosk" />
     </application>
 </manifest>

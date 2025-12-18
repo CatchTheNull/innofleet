@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +20,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.inno.kiosk.R
 import com.inno.kiosk.data.SecurePrefs
 import com.inno.kiosk.kiosk.KioskPolicy
@@ -97,10 +99,45 @@ class KioskActivity : AppCompatActivity() {
     private var firstPage = true
     private var lastUrl: String? = null
 
+    // ✅ Периодическая очистка памяти видео для предотвращения зависаний
+    private val videoCleanupHandler = Handler(Looper.getMainLooper())
+    private val VIDEO_CLEANUP_INTERVAL_MS = 2 * 60 * 1000L // каждые 2 минуты (было 5)
+    private val videoCleanupRunnable: Runnable = object : Runnable {
+        override fun run() {
+            videoCleanupCount++
+            cleanupInvisibleVideos()
+            // ✅ Дополнительная агрессивная очистка каждые 5 циклов (≈10 минут)
+            if (videoCleanupCount % 5 == 0) {
+                aggressiveVideoCleanup()
+            }
+            videoCleanupHandler.postDelayed(this, VIDEO_CLEANUP_INTERVAL_MS)
+        }
+    }
+
+    // ✅ Счетчик для отслеживания накопления памяти
+    private var videoCleanupCount = 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // ✅ ВАЖНО: installSplashScreen() должен быть ДО super.onCreate()
+        installSplashScreen()
+
         super.onCreate(savedInstanceState)
 
+        // ✅ Проверяем конфигурацию - если не настроено, переходим в Setup
+        val prefs = SecurePrefs(this)
+        if (!prefs.isConfigured()) {
+            startActivity(
+                Intent(this, SetupActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            )
+            finish()
+            return
+        }
+
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // ✅ Устанавливаем максимальную яркость экрана
+        setMaxBrightness()
 
         setContentView(R.layout.activity_kiosk)
         hideSystemUi()
@@ -114,8 +151,6 @@ class KioskActivity : AppCompatActivity() {
 
         // ✅ Дополнительно: исключаем верхнюю область из системных жестов (Android 10+)
         applySystemGestureExclusion()
-
-        val prefs = SecurePrefs(this)
 
         web = findViewById(R.id.webView)
         configureWebView(web)
@@ -131,11 +166,19 @@ class KioskActivity : AppCompatActivity() {
 
         watchdogHandler.removeCallbacks(watchdogPingRunnable)
         watchdogHandler.postDelayed(watchdogPingRunnable, 5_000L)
+
+        // ✅ Запускаем периодическую очистку памяти видео
+        videoCleanupHandler.removeCallbacks(videoCleanupRunnable)
+        videoCleanupHandler.postDelayed(videoCleanupRunnable, VIDEO_CLEANUP_INTERVAL_MS)
     }
 
     override fun onResume() {
         super.onResume()
         hideSystemUi()
+
+        // ✅ Восстанавливаем максимальную яркость при возобновлении
+        setMaxBrightness()
+
         try { startLockTask() } catch (_: Throwable) {}
 
         installTopSwipeBlocker(forceRecreate = false)
@@ -188,6 +231,74 @@ class KioskActivity : AppCompatActivity() {
             }
         }
         return super.dispatchTouchEvent(ev)
+    }
+
+    /**
+     * ✅ Блокируем все кнопки блокировки экрана (питание, сон и т.д.)
+     * Обрабатываем через onKeyDown для совместимости с AppCompatActivity
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        // ✅ Блокируем кнопку питания - всегда игнорируем, чтобы не блокировался экран
+        if (keyCode == KeyEvent.KEYCODE_POWER) {
+            // ✅ Полностью блокируем кнопку питания - экран не должен блокироваться
+            return true
+        }
+
+        // ✅ Блокируем кнопку сна/блокировки (если есть)
+        if (keyCode == KeyEvent.KEYCODE_SLEEP || keyCode == KeyEvent.KEYCODE_ENDCALL) {
+            // ✅ Полностью блокируем эти кнопки
+            return true
+        }
+
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
+        // ✅ Также блокируем в onKeyUp для надежности
+        if (keyCode == KeyEvent.KEYCODE_POWER ||
+            keyCode == KeyEvent.KEYCODE_SLEEP ||
+            keyCode == KeyEvent.KEYCODE_ENDCALL) {
+            // ✅ Полностью блокируем все кнопки блокировки
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
+    }
+
+    /**
+     * ✅ Устанавливает максимальную яркость экрана
+     */
+    private fun setMaxBrightness() {
+        try {
+            val layoutParams = window.attributes
+            // ✅ Устанавливаем максимальную яркость (1.0 = 100%)
+            layoutParams.screenBrightness = 1.0f
+            window.attributes = layoutParams
+
+            // ✅ Дополнительно: пытаемся установить системную яркость (требует разрешения)
+            try {
+                val brightness = android.provider.Settings.System.getInt(
+                    contentResolver,
+                    android.provider.Settings.System.SCREEN_BRIGHTNESS,
+                    255
+                )
+                // ✅ Устанавливаем максимальную яркость (255 = максимум)
+                if (brightness < 255) {
+                    android.provider.Settings.System.putInt(
+                        contentResolver,
+                        android.provider.Settings.System.SCREEN_BRIGHTNESS,
+                        255
+                    )
+                }
+            } catch (e: SecurityException) {
+                // ✅ Нет разрешения на изменение системной яркости - это нормально
+                // Яркость окна все равно будет максимальной
+                android.util.Log.d("KIOSK", "Cannot set system brightness (no permission): ${e.message}")
+            } catch (e: Throwable) {
+                android.util.Log.w("KIOSK", "Failed to set system brightness: ${e.message}")
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("KIOSK", "Failed to set max brightness: ${e.message}")
+        }
     }
 
     // ---------------------------
@@ -295,11 +406,15 @@ class KioskActivity : AppCompatActivity() {
     }
 
     private fun showAdminMenu(prefs: SecurePrefs) {
+        val ignorePowerButton = prefs.isIgnorePowerButton()
+        val powerButtonStatus = if (ignorePowerButton) "✅" else "❌"
+
         val items = arrayOf(
             "🔄 Обновить страницу",
             "♻️ Перезапустить WebView (без очистки токена)",
             "🧹 Очистить Cache + Cookies + Storage (вкл. IndexedDB)",
             "🧯 Освободить память видео (release)",
+            "$powerButtonStatus Игнорировать кнопку питания: ${if (ignorePowerButton) "ВКЛ" else "ВЫКЛ"}",
             "🚪 Выйти из киоска (stopLockTask)",
             "♻️ Сбросить настройки (вернуться в Setup)"
         )
@@ -322,10 +437,22 @@ class KioskActivity : AppCompatActivity() {
                         Toast.makeText(this, "Попробовал освободить память видео", Toast.LENGTH_SHORT).show()
                     }
                     4 -> {
+                        // ✅ Переключаем игнорирование кнопки питания
+                        val newValue = !prefs.isIgnorePowerButton()
+                        prefs.setIgnorePowerButton(newValue)
+                        Toast.makeText(
+                            this,
+                            "Игнорирование кнопки питания: ${if (newValue) "ВКЛ" else "ВЫКЛ"}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        // Обновляем меню
+                        handler.postDelayed({ showAdminMenu(prefs) }, 300L)
+                    }
+                    5 -> {
                         try { stopLockTask() } catch (_: Throwable) {}
                         Toast.makeText(this, "LockTask остановлен", Toast.LENGTH_SHORT).show()
                     }
-                    5 -> {
+                    6 -> {
                         prefs.reset()
                         try { stopLockTask() } catch (_: Throwable) {}
                         startActivity(
@@ -419,11 +546,18 @@ class KioskActivity : AppCompatActivity() {
                 seenOrbOnMedia = false
                 orbLogOnce = false
 
-                // ✅ освобождаем видео-буферы ТОЛЬКО при уходе с первой (splash) страницы на другую
+                // ✅ освобождаем видео-буферы при навигации на новую страницу (не только с первой)
                 val prev = lastUrl
-                if (firstPage && prev != null && url != null && url != prev) {
-                    handler.postDelayed({ releaseVideoMemory() }, 800L)
-                    firstPage = false
+                if (prev != null && url != null && url != prev) {
+                    // ✅ Агрессивная очистка при навигации - освобождаем все видео со старой страницы
+                    handler.postDelayed({
+                        aggressiveVideoCleanup()
+                        cleanupInvisibleVideos()
+                        if (firstPage) {
+                            releaseVideoMemory()
+                            firstPage = false
+                        }
+                    }, 300L)
                 }
 
                 lastUrl = url
@@ -433,16 +567,37 @@ class KioskActivity : AppCompatActivity() {
             override fun onPageCommitVisible(view: WebView?, url: String?) {
                 super.onPageCommitVisible(view, url)
                 if (!seenOrbOnMedia) {
+                    // ✅ Применяем стили сразу, затем запускаем видео
                     injectVideoNoPlayOverlay(view)
-                    forceAutoplayVideos(view)
+                    // ✅ Небольшая задержка перед автоплеем для гарантии применения стилей
+                    handler.postDelayed({
+                        forceAutoplayVideos(view)
+                        // ✅ Повторная проверка через 200мс для новых видео
+                        handler.postDelayed({
+                            injectVideoNoPlayOverlay(view)
+                            forceAutoplayVideos(view)
+                        }, 200L)
+                    }, 100L)
                 }
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 android.util.Log.d("KIOSK_WEB", "onPageFinished: $url")
                 if (!seenOrbOnMedia) {
+                    // ✅ Применяем стили и запускаем видео с задержками для надежности
                     injectVideoNoPlayOverlay(view)
-                    forceAutoplayVideos(view)
+                    handler.postDelayed({
+                        forceAutoplayVideos(view)
+                        // ✅ Повторная проверка для динамически добавленных видео
+                        handler.postDelayed({
+                            injectVideoNoPlayOverlay(view)
+                            forceAutoplayVideos(view)
+                        }, 300L)
+                        // ✅ Еще одна проверка через секунду для очень медленных загрузок
+                        handler.postDelayed({
+                            injectVideoNoPlayOverlay(view)
+                        }, 1000L)
+                    }, 150L)
                 }
                 // ❌ ВАЖНО: НЕ чистим видео по таймеру здесь — иначе длинные видео покажут "play"
             }
@@ -478,6 +633,14 @@ class KioskActivity : AppCompatActivity() {
         s.loadsImagesAutomatically = true
         s.useWideViewPort = true
         s.loadWithOverviewMode = true
+
+        // ✅ Оптимизации для управления памятью
+        try {
+            s.setRenderPriority(WebSettings.RenderPriority.HIGH)
+        } catch (_: Throwable) {}
+
+        // ✅ Ограничиваем кеширование для экономии памяти (уже установлено выше)
+        // s.cacheMode = WebSettings.LOAD_DEFAULT (уже установлено)
 
         // ✅ аппаратное ускорение оставляем (нужно для видео)
         w.setLayerType(View.LAYER_TYPE_HARDWARE, null)
@@ -524,6 +687,7 @@ class KioskActivity : AppCompatActivity() {
      * - видео невидимо (opacity 0) до playing/timeupdate
      * - скрываем нативные webkit-контролы
      * - скрываем типовые overlay-кнопки популярных плееров (videojs/plyr/youtube)
+     * - используем MutationObserver для отслеживания новых видео
      */
     private fun injectVideoNoPlayOverlay(view: WebView?) {
         view ?: return
@@ -535,30 +699,52 @@ class KioskActivity : AppCompatActivity() {
                   var st = document.createElement('style');
                   st.id = 'kioskVideoFixStyle';
                   st.textContent = `
-                    video { background: transparent !important; }
-                    video.kiosk-video-fix { opacity: 0 !important; transition: opacity .12s linear; }
-                    video.kiosk-video-fix.kiosk-playing { opacity: 1 !important; }
-
+                    /* ✅ Скрываем все видео по умолчанию */
+                    video { 
+                      background: transparent !important; 
+                      opacity: 0 !important;
+                      transition: opacity 0.15s linear !important;
+                    }
+                    
+                    /* ✅ Показываем только когда играет */
+                    video.kiosk-video-fix.kiosk-playing { 
+                      opacity: 1 !important; 
+                    }
+                    
+                    /* ✅ Скрываем все контролы */
                     video[controls] { display:none !important; }
                     video::-webkit-media-controls { display:none !important; }
                     video::-webkit-media-controls-enclosure { display:none !important; }
                     video::-webkit-media-controls-panel { display:none !important; }
                     video::-webkit-media-controls-overlay-play-button { display:none !important; }
                     video::-webkit-media-controls-play-button { display:none !important; }
+                    video::-webkit-media-controls-start-playback-button { display:none !important; }
 
-                    .vjs-big-play-button, .plyr__control--overlaid, .ytp-large-play-button {
-                      display:none !important; opacity:0 !important; visibility:hidden !important;
+                    /* ✅ Скрываем кнопки популярных плееров */
+                    .vjs-big-play-button, 
+                    .plyr__control--overlaid, 
+                    .ytp-large-play-button,
+                    .vjs-poster,
+                    .plyr__poster {
+                      display:none !important; 
+                      opacity:0 !important; 
+                      visibility:hidden !important;
+                      pointer-events: none !important;
                     }
                   `;
                   document.head.appendChild(st);
                 }
 
                 function markPlaying(v){
-                  try { v.classList.add('kiosk-playing'); } catch(e){}
+                  try { 
+                    v.classList.add('kiosk-playing'); 
+                  } catch(e){}
                 }
 
-                document.querySelectorAll('video').forEach(function(v){
+                function setupVideo(v){
+                  if (v.classList.contains('kiosk-video-setup')) return;
                   v.classList.add('kiosk-video-fix');
+                  v.classList.add('kiosk-video-setup');
 
                   v.muted = true;
                   v.playsInline = true;
@@ -570,16 +756,60 @@ class KioskActivity : AppCompatActivity() {
 
                   v.removeAttribute('controls');
                   v.controls = false;
+                  
+                  // ✅ Скрываем сразу
+                  v.style.opacity = '0';
 
-                  if (!v.paused && v.readyState >= 2) markPlaying(v);
+                  // ✅ Проверяем текущее состояние
+                  if (!v.paused && v.readyState >= 2) {
+                    markPlaying(v);
+                  }
 
-                  v.addEventListener('playing', function(){ markPlaying(v); }, { once: true });
+                  // ✅ Слушаем события воспроизведения
+                  v.addEventListener('playing', function(){ 
+                    markPlaying(v); 
+                  }, { once: true });
 
                   v.addEventListener('timeupdate', function(){
-                    if (v.currentTime > 0 && !v.paused) markPlaying(v);
+                    if (v.currentTime > 0.1 && !v.paused) markPlaying(v);
                   }, { once: true });
-                });
-              } catch(e) {}
+                  
+                  // ✅ Дополнительная проверка через canplay
+                  v.addEventListener('canplay', function(){
+                    if (!v.paused && v.currentTime > 0) markPlaying(v);
+                  }, { once: true });
+                }
+
+                // ✅ Обрабатываем существующие видео
+                document.querySelectorAll('video').forEach(setupVideo);
+                
+                // ✅ Отслеживаем новые видео через MutationObserver
+                if (!window.kioskVideoObserver) {
+                  window.kioskVideoObserver = new MutationObserver(function(mutations) {
+                    mutations.forEach(function(mutation) {
+                      mutation.addedNodes.forEach(function(node) {
+                        if (node.nodeType === 1) {
+                          if (node.tagName === 'VIDEO') {
+                            setupVideo(node);
+                          }
+                          // ✅ Проверяем вложенные видео
+                          var videos = node.querySelectorAll && node.querySelectorAll('video');
+                          if (videos) {
+                            videos.forEach(setupVideo);
+                          }
+                        }
+                      });
+                    });
+                  });
+                  
+                  window.kioskVideoObserver.observe(document.body || document.documentElement, {
+                    childList: true,
+                    subtree: true
+                  });
+                }
+              } catch(e) {
+                console.error('kioskVideoFix error:', e);
+              }
               return "ok";
             })();
             """.trimIndent(),
@@ -639,6 +869,168 @@ class KioskActivity : AppCompatActivity() {
                 """.trimIndent(),
                 null
             )
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * ✅ Очищаем невидимые/неактивные видео для освобождения памяти
+     * Вызывается периодически и при навигации
+     */
+    private fun cleanupInvisibleVideos() {
+        if (!this::web.isInitialized) return
+        try {
+            web.evaluateJavascript(
+                """
+                (function(){
+                  try {
+                    var cleaned = 0;
+                    var activeVideos = [];
+                    var allVideos = document.querySelectorAll('video');
+                    
+                    // ✅ Сначала находим активные (видимые и играющие) видео
+                    allVideos.forEach(function(v){
+                      var rect = v.getBoundingClientRect();
+                      var isVisible = rect.width > 0 && rect.height > 0 && 
+                                     rect.top < window.innerHeight && 
+                                     rect.bottom > 0 &&
+                                     rect.left < window.innerWidth && 
+                                     rect.right > 0;
+                      var isPlaying = !v.paused && !v.ended && v.readyState >= 2;
+                      
+                      if (isVisible && isPlaying) {
+                        activeVideos.push(v);
+                      }
+                    });
+                    
+                    // ✅ Очищаем все остальные видео
+                    allVideos.forEach(function(v){
+                      var isActive = activeVideos.indexOf(v) >= 0;
+                      
+                      if (!isActive) {
+                        try {
+                          v.pause();
+                          // ✅ Более агрессивная очистка - очищаем все неактивные
+                          v.removeAttribute('src');
+                          var ss = v.querySelectorAll('source');
+                          ss.forEach(function(s){ 
+                            s.removeAttribute('src'); 
+                            try { s.remove(); } catch(e){}
+                          });
+                          v.load();
+                          // ✅ Очищаем буферы
+                          v.currentTime = 0;
+                          cleaned++;
+                        } catch(e){}
+                      }
+                    });
+                    
+                    return "cleaned:" + cleaned + ",active:" + activeVideos.length;
+                  } catch(e){
+                    return "error:" + e.message;
+                  }
+                })();
+                """.trimIndent(),
+                null
+            )
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * ✅ Агрессивная очистка всех видео-ресурсов для освобождения памяти
+     * Очищает все видео кроме текущего активного
+     */
+    private fun aggressiveVideoCleanup() {
+        if (!this::web.isInitialized) return
+
+        try {
+            web.evaluateJavascript(
+                """
+                (function(){
+                  try {
+                    var cleaned = 0;
+                    var kept = 0;
+                    var allVideos = document.querySelectorAll('video');
+                    
+                    // ✅ Находим самое "важное" видео (видимое и играющее)
+                    var primaryVideo = null;
+                    allVideos.forEach(function(v){
+                      var rect = v.getBoundingClientRect();
+                      var isVisible = rect.width > 50 && rect.height > 50 && 
+                                     rect.top < window.innerHeight && 
+                                     rect.bottom > 0 &&
+                                     rect.left < window.innerWidth && 
+                                     rect.right > 0;
+                      var isPlaying = !v.paused && !v.ended;
+                      
+                      if (isVisible && isPlaying && !primaryVideo) {
+                        primaryVideo = v;
+                      }
+                    });
+                    
+                    // ✅ Очищаем все видео кроме основного
+                    allVideos.forEach(function(v){
+                      if (v === primaryVideo) {
+                        kept++;
+                        return;
+                      }
+                      
+                      try {
+                        v.pause();
+                        v.currentTime = 0;
+                        v.removeAttribute('src');
+                        var ss = v.querySelectorAll('source');
+                        ss.forEach(function(s){ 
+                          s.removeAttribute('src');
+                          try { s.remove(); } catch(e){}
+                        });
+                        v.load();
+                        // ✅ Дополнительно: очищаем poster и другие атрибуты
+                        v.removeAttribute('poster');
+                        cleaned++;
+                      } catch(e){}
+                    });
+                    
+                    // ✅ Принудительная очистка кеша браузера для видео
+                    if (window.caches) {
+                      caches.keys().then(function(keys) {
+                        keys.forEach(function(key) {
+                          if (key.includes('video') || key.includes('media')) {
+                            caches.delete(key);
+                          }
+                        });
+                      }).catch(function(){});
+                    }
+                    
+                    return "aggressive:cleaned=" + cleaned + ",kept=" + kept;
+                  } catch(e){
+                    return "error:" + e.message;
+                  }
+                })();
+                """.trimIndent(),
+                null
+            )
+
+            // ✅ Периодически очищаем кеш WebView (каждые 5 очисток = ~10 минут)
+            if (videoCleanupCount % 5 == 0) {
+                handler.postDelayed({
+                    try {
+                        web.clearCache(false) // очищаем только кеш, не историю
+                        android.util.Log.d("KIOSK_MEM", "WebView cache cleared")
+                    } catch (_: Throwable) {}
+                }, 1000L)
+            }
+
+            // ✅ Периодически предлагаем сборщику мусора очистить память (каждые 10 очисток = ~20 минут)
+            if (videoCleanupCount % 10 == 0) {
+                handler.postDelayed({
+                    try {
+                        System.gc()
+                        Runtime.getRuntime().gc()
+                        android.util.Log.d("KIOSK_MEM", "GC suggested after $videoCleanupCount cleanups")
+                    } catch (_: Throwable) {}
+                }, 2000L)
+            }
+
         } catch (_: Throwable) {}
     }
 
@@ -740,6 +1132,7 @@ class KioskActivity : AppCompatActivity() {
                     or View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
     }
 
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
@@ -753,6 +1146,7 @@ class KioskActivity : AppCompatActivity() {
         handler.removeCallbacks(adminHoldRunnable)
         watchdogHandler.removeCallbacks(watchdogPingRunnable)
         watchdogHandler.removeCallbacks(watchdogTimeoutRunnable)
+        videoCleanupHandler.removeCallbacks(videoCleanupRunnable)
         waitingPong = false
         removeTopSwipeBlocker()
 

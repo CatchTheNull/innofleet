@@ -32,6 +32,15 @@ class SecurePrefs(context: Context) {
     fun getAdminPassword(): String? =
         prefs.getString(KEY_ADMIN_PASSWORD, null)
 
+    fun isIgnorePowerButton(): Boolean =
+        prefs.getBoolean(KEY_IGNORE_POWER_BUTTON, true) // по умолчанию включено
+
+    fun setIgnorePowerButton(ignore: Boolean) {
+        prefs.edit()
+            .putBoolean(KEY_IGNORE_POWER_BUTTON, ignore)
+            .apply()
+    }
+
     fun reset() {
         prefs.edit().clear().apply()
     }
@@ -39,5 +48,6 @@ class SecurePrefs(context: Context) {
     companion object {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_ADMIN_PASSWORD = "admin_password"
+        private const val KEY_IGNORE_POWER_BUTTON = "ignore_power_button"
     }
 }

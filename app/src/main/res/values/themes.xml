@@ -1,9 +1,23 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Твоя основная тема (как есть) -->
     <style name="Theme.InnoKiosk" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">@android:color/black</item>
         <item name="colorPrimaryDark">@android:color/black</item>
         <item name="colorAccent">@android:color/holo_blue_light</item>
+    </style>
+
+    <!-- Splash тема (Android 12+ через библиотеку тоже работает) -->
+    <style name="Theme.InnoKiosk.Splash" parent="Theme.SplashScreen">
+        <!-- фон сплэша -->
+        <item name="windowSplashScreenBackground">@android:color/black</item>
+
+        <!-- иконка по центру -->
+
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_logo</item>
+
+        <!-- куда перейти после сплэша -->
+        <item name="postSplashScreenTheme">@style/Theme.InnoKiosk</item>
     </style>
 
 </resources>
