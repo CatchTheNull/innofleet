@@ -24,21 +24,6 @@ Android‑приложение в режиме Kiosk (Lock Task Mode) для з�
 	•	Kiosk Activity (основной экран)
 	•	Setup Activity (первичная настройка)
 	•	BootReceiver (автозапуск)
-
-⸻
-
-📦 Структура проекта
-
-app/
- ├── admin/          # DeviceAdminReceiver
- ├── boot/           # Автозапуск после reboot
- ├── data/           # SecurePrefs
- ├── kiosk/          # Политики Kiosk режима
- ├── ui/
- │   ├── kiosk/      # Основной экран киоска
- │   └── setup/      # Экран настройки
-
-
 ⸻
 
 ⚙️ Сборка и запуск
