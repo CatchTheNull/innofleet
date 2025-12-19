@@ -117,6 +117,39 @@ class KioskActivity : AppCompatActivity() {
     // ✅ Счетчик для отслеживания накопления памяти
     private var videoCleanupCount = 0
 
+    // ✅ Автоматическая перезагрузка при отсутствии активности
+    private var lastActivityTime = System.currentTimeMillis()
+    private val inactivityHandler = Handler(Looper.getMainLooper())
+    private val INACTIVITY_CHECK_INTERVAL_MS = 60_000L // проверяем каждую минуту
+    private val INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000L // 3 минуты бездействия
+    private val inactivityCheckRunnable: Runnable = object : Runnable {
+        override fun run() {
+            val now = System.currentTimeMillis()
+            val timeSinceLastActivity = now - lastActivityTime
+
+            if (timeSinceLastActivity >= INACTIVITY_TIMEOUT_MS) {
+                // ✅ Перезагружаем страницу если не было активности более 3 минут
+                android.util.Log.d("KIOSK", "No activity for ${timeSinceLastActivity / 1000}s - reloading page")
+                if (this@KioskActivity::web.isInitialized) {
+                    web.reload()
+                    lastActivityTime = now // сбрасываем таймер после перезагрузки
+                }
+            }
+
+            inactivityHandler.postDelayed(this, INACTIVITY_CHECK_INTERVAL_MS)
+        }
+    }
+
+    // ✅ Периодическая проверка и перезапуск видео
+    private val videoWatchdogHandler = Handler(Looper.getMainLooper())
+    private val VIDEO_WATCHDOG_INTERVAL_MS = 30_000L // проверяем каждые 30 секунд
+    private val videoWatchdogRunnable: Runnable = object : Runnable {
+        override fun run() {
+            checkAndRestartVideos()
+            videoWatchdogHandler.postDelayed(this, VIDEO_WATCHDOG_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // ✅ ВАЖНО: installSplashScreen() должен быть ДО super.onCreate()
         installSplashScreen()
@@ -170,6 +203,15 @@ class KioskActivity : AppCompatActivity() {
         // ✅ Запускаем периодическую очистку памяти видео
         videoCleanupHandler.removeCallbacks(videoCleanupRunnable)
         videoCleanupHandler.postDelayed(videoCleanupRunnable, VIDEO_CLEANUP_INTERVAL_MS)
+
+        // ✅ Запускаем проверку активности для автоматической перезагрузки
+        lastActivityTime = System.currentTimeMillis()
+        inactivityHandler.removeCallbacks(inactivityCheckRunnable)
+        inactivityHandler.postDelayed(inactivityCheckRunnable, INACTIVITY_CHECK_INTERVAL_MS)
+
+        // ✅ Запускаем watchdog для проверки и перезапуска видео
+        videoWatchdogHandler.removeCallbacks(videoWatchdogRunnable)
+        videoWatchdogHandler.postDelayed(videoWatchdogRunnable, VIDEO_WATCHDOG_INTERVAL_MS)
     }
 
     override fun onResume() {
@@ -178,6 +220,9 @@ class KioskActivity : AppCompatActivity() {
 
         // ✅ Восстанавливаем максимальную яркость при возобновлении
         setMaxBrightness()
+
+        // ✅ Сбрасываем таймер активности при возобновлении
+        lastActivityTime = System.currentTimeMillis()
 
         try { startLockTask() } catch (_: Throwable) {}
 
@@ -206,6 +251,9 @@ class KioskActivity : AppCompatActivity() {
      * ✅ Long-press для админа.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // ✅ Обновляем время последней активности при любом касании
+        lastActivityTime = System.currentTimeMillis()
+
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 adminTriggered = false
@@ -753,6 +801,8 @@ class KioskActivity : AppCompatActivity() {
                   v.setAttribute('muted','');
                   v.setAttribute('autoplay','');
                   v.setAttribute('preload','auto');
+                  v.setAttribute('loop',''); // ✅ Включаем зацикливание
+                  v.loop = true; // ✅ Включаем зацикливание через JS
 
                   v.removeAttribute('controls');
                   v.controls = false;
@@ -765,19 +815,47 @@ class KioskActivity : AppCompatActivity() {
                     markPlaying(v);
                   }
 
-                  // ✅ Слушаем события воспроизведения
+                  // ✅ Слушаем события воспроизведения (убираем once для постоянного отслеживания)
                   v.addEventListener('playing', function(){ 
                     markPlaying(v); 
-                  }, { once: true });
+                  }, false);
 
                   v.addEventListener('timeupdate', function(){
                     if (v.currentTime > 0.1 && !v.paused) markPlaying(v);
-                  }, { once: true });
+                  }, false);
                   
                   // ✅ Дополнительная проверка через canplay
                   v.addEventListener('canplay', function(){
                     if (!v.paused && v.currentTime > 0) markPlaying(v);
-                  }, { once: true });
+                  }, false);
+                  
+                  // ✅ КРИТИЧНО: Обрабатываем событие ended - перезапускаем видео
+                  v.addEventListener('ended', function(){
+                    try {
+                      v.currentTime = 0;
+                      v.play().catch(function(e){
+                        console.log('Auto-restart video failed:', e);
+                        // ✅ Если play() не сработал, пробуем через load()
+                        setTimeout(function(){
+                          v.load();
+                          v.play().catch(function(){});
+                        }, 100);
+                      });
+                      markPlaying(v);
+                    } catch(e) {
+                      console.error('Video ended handler error:', e);
+                    }
+                  }, false);
+                  
+                  // ✅ Обрабатываем pause - автоматически возобновляем если остановилось
+                  v.addEventListener('pause', function(){
+                    // ✅ Если видео остановилось не по нашей команде - перезапускаем через небольшую задержку
+                    setTimeout(function(){
+                      if (v.paused && !v.ended) {
+                        v.play().catch(function(){});
+                      }
+                    }, 500);
+                  }, false);
                 }
 
                 // ✅ Обрабатываем существующие видео
@@ -830,10 +908,15 @@ class KioskActivity : AppCompatActivity() {
                   v.setAttribute('webkit-playsinline','');
                   v.setAttribute('muted','');
                   v.setAttribute('autoplay','');
+                  v.setAttribute('loop',''); // ✅ Включаем зацикливание
+                  v.loop = true; // ✅ Включаем зацикливание через JS
                   v.preload = 'auto';
                   v.removeAttribute('controls');
                   v.controls = false;
-                  if (v.paused) { v.play().catch(function(){}); }
+                  if (v.paused || v.ended) { 
+                    v.currentTime = 0;
+                    v.play().catch(function(){}); 
+                  }
                 });
               } catch (e) {}
               return "ok";
@@ -841,6 +924,56 @@ class KioskActivity : AppCompatActivity() {
             """.trimIndent(),
             null
         )
+    }
+
+    /**
+     * ✅ Проверяет состояние видео и перезапускает остановившиеся
+     */
+    private fun checkAndRestartVideos() {
+        if (!this::web.isInitialized) return
+        try {
+            web.evaluateJavascript(
+                """
+                (function(){
+                  try {
+                    var restarted = 0;
+                    document.querySelectorAll('video').forEach(function(v){
+                      // ✅ Проверяем, видно ли видео на экране
+                      var rect = v.getBoundingClientRect();
+                      var isVisible = rect.width > 50 && rect.height > 50 && 
+                                     rect.top < window.innerHeight && 
+                                     rect.bottom > 0 &&
+                                     rect.left < window.innerWidth && 
+                                     rect.right > 0;
+                      
+                      // ✅ Если видео видимо и остановилось - перезапускаем
+                      if (isVisible && (v.paused || v.ended)) {
+                        try {
+                          v.currentTime = 0;
+                          v.loop = true; // ✅ Убеждаемся что loop включен
+                          v.play().catch(function(e){
+                            console.log('Video watchdog restart failed:', e);
+                            // ✅ Если play() не сработал, пробуем через load()
+                            setTimeout(function(){
+                              v.load();
+                              v.play().catch(function(){});
+                            }, 200);
+                          });
+                          restarted++;
+                        } catch(e){
+                          console.error('Video restart error:', e);
+                        }
+                      }
+                    });
+                    return "restarted:" + restarted;
+                  } catch(e){
+                    return "error:" + e.message;
+                  }
+                })();
+                """.trimIndent(),
+                null
+            )
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -1147,6 +1280,8 @@ class KioskActivity : AppCompatActivity() {
         watchdogHandler.removeCallbacks(watchdogPingRunnable)
         watchdogHandler.removeCallbacks(watchdogTimeoutRunnable)
         videoCleanupHandler.removeCallbacks(videoCleanupRunnable)
+        inactivityHandler.removeCallbacks(inactivityCheckRunnable)
+        videoWatchdogHandler.removeCallbacks(videoWatchdogRunnable)
         waitingPong = false
         removeTopSwipeBlocker()
 
